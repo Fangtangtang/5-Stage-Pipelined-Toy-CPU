@@ -27,7 +27,7 @@ module MAIN_MEMORY#(parameter ADDR_WIDTH = 17,
         for (integer i = 0;i<2**ADDR_WIDTH;i = i+1) begin
             storage[i] = 0;
         end
-        $readmemh("/mnt/f/repo/ToyCPU/user/testspace/test.data", storage);
+        $readmemh("/mnt/f/repo/5-Stage-ToyCPU/testspace/test.data", storage);
     end
     
     always @(posedge clk) begin

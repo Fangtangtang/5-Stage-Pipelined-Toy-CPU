@@ -79,11 +79,11 @@ module CPU#(parameter LEN = 32,
     // DECODER
     // ---------------------------------------------------------------------------------------------
     wire [4:0]      rs1_index;
-    wire [4:0]      rs2_insdex;
-    wire [4:0]       rd_index;
-    assign rs1_index  = instruction[19:15];
-    assign rs2_insdex = instruction[24:20];
-    assign rd_index   = instruction[11:7];
+    wire [4:0]      rs2_index;
+    wire [4:0]      rd_index;
+    assign rs1_index = instruction[19:15];
+    assign rs2_index = instruction[24:20];
+    assign rd_index  = instruction[11:7];
     
     wire [6:0]      opcode;
     assign opcode = instruction[6:0];
@@ -104,7 +104,7 @@ module CPU#(parameter LEN = 32,
     assign S_type          = opcode == 7'b0100011;
     assign B_type          = opcode == 7'b1100011;
     assign U_type          = opcode == 7'b0110111||opcode == 7'b0010111;
-    assign J_type          = opcode == 7'b1101111&&(func_code[2:0] == 3'b000);
+    assign J_type          = opcode == 7'b1101111;
     
     reg [2:0]       alu_signal;
     reg [1:0]       mem_vis_signal;
@@ -231,11 +231,11 @@ module CPU#(parameter LEN = 32,
     // todo:当memory被占用时,如何stall
     
     assign mem_inst_addr      = PC[ADDR_WIDTH-1:0];
-    assign inst_fetch_enabled = IF_STATE_CTR;
-    assign mem_vis_enabled    = MEM_STATE_CTR;
+    assign inst_fetch_enabled = NOT_STALL&&!(PC == prev_pc);
+    assign mem_vis_enabled    = NOT_STALL;
     
     assign mem_data_addr        = EXE_MEM_RESULT[ADDR_WIDTH-1:0];
-    assign memory_vis_signal    = MEM_STATE_CTR ? EXE_MEM_MEM_VIS_SIGNAL:`MEM_NOP;
+    assign memory_vis_signal    = NOT_STALL ? EXE_MEM_MEM_VIS_SIGNAL:`MEM_NOP;
     assign memory_vis_data_size = EXE_MEM_MEM_VIS_DATA_SIZE;
     assign mem_write_data       = EXE_MEM_RS2;
     
@@ -251,11 +251,17 @@ module CPU#(parameter LEN = 32,
     // stall or not
     // 可能因为访存等原因stall
     
-    reg         IF_STATE_CTR  = 0;
-    reg         ID_STATE_CTR  = 0;
-    reg         EXE_STATE_CTR = 0;
-    reg         MEM_STATE_CTR = 0;
-    reg         WB_STATE_CTR  = 0;
+    reg         IF_STATE_CTR;
+    reg         ID_STATE_CTR;
+    reg         EXE_STATE_CTR;
+    reg         MEM_STATE_CTR;
+    reg         WB_STATE_CTR;
+    
+    reg IF_STALL         = 0; // instruction fetch
+    reg CONTROL_STALL    = 0; // branch
+    reg DATA_STALL       = 0; // load/store
+    wire OUTER_NOT_STALL = IF_STALL == 0&&DATA_STALL == 0;
+    wire NOT_STALL       = IF_STALL == 0&&CONTROL_STALL == 0&&DATA_STALL == 0;
     
     // REGISTER FILE
     // ----------------------------------------------------------------------------
@@ -266,8 +272,8 @@ module CPU#(parameter LEN = 32,
     wire [LEN-1:0]          rs1_value;
     wire [LEN-1:0]          rs2_value;
     
-    assign  write_back_enabled = WB_STATE_CTR;
-    assign  rf_signal          = (WB_STATE_CTR&&rb_flag)? `RF_WRITE:`RF_NOP;
+    assign  write_back_enabled = NOT_STALL;
+    assign  rf_signal          = (NOT_STALL&&rb_flag)? `RF_WRITE:`RF_NOP;
     
     REG_FILE reg_file(
     .clk            (clk),
@@ -275,7 +281,7 @@ module CPU#(parameter LEN = 32,
     .rdy_in         (rdy_in),
     .rf_signal      (rf_signal),
     .rs1            (rs1_index),
-    .rs2            (rs2_insdex),
+    .rs2            (rs2_index),
     .rd             (MEM_WB_RD_INDEX),
     .data           (reg_write_data),
     .write_back_enabled(write_back_enabled),
@@ -287,6 +293,7 @@ module CPU#(parameter LEN = 32,
     // IMMIDIATE GENETATOR
     // -----------------------------------------------------------------------------
     wire [LEN-1:0]          immediate;
+    
     IMMEDIATE_GENETATOR immediate_generator(
     .chip_enable        (chip_enable),
     .instruction        (instruction),
@@ -332,19 +339,25 @@ module CPU#(parameter LEN = 32,
     // - memory visit取指令
     // - 更新transfer register的PC
     // ---------------------------------------------------------------------------------------------
+    reg [LEN-1:0] prev_pc = -1;
     
     always @(posedge clk) begin
         if (rdy_in) begin
             if (chip_enable&&start_cpu) begin
-                if (IF_STATE_CTR) begin
+                if (NOT_STALL) begin
                     IF_ID_PC <= PC;
                 end
                 // IF没有结束，向下加stall
                 if (mem_vis_status == `IF_FINISHED) begin
                     ID_STATE_CTR <= 1;
+                    IF_STALL     <= 0;
+                    prev_pc      <= PC;
                 end
                 else begin
                     ID_STATE_CTR <= 0;
+                    if (!PC == prev_pc) begin
+                        IF_STALL <= 1;
+                    end
                 end
             end
             else begin
@@ -355,12 +368,23 @@ module CPU#(parameter LEN = 32,
     
     // STAGE2 : INSTRUCTION DECODE
     // - decode(组合逻辑接线解决)
-    // - 访问register file取值
+    // - 访问register file取值/forwarding
     // 更新transfer register
     // ---------------------------------------------------------------------------------------------
+    
+    // forwarding data
+    // 后来的会覆盖掉先来的
+    reg [LEN-1:0] exe_forwarding_data;
+    reg           exe_valid;
+    reg [4:0]     exe_reg_index;
+    
+    reg [LEN-1:0] mem_forwarding_data;
+    reg           mem_valid;
+    reg [4:0]     mem_reg_index;
+    
     always @(posedge clk) begin
         if ((!rst)&&rdy_in&&start_cpu) begin
-            if (ID_STATE_CTR) begin
+            if (NOT_STALL) begin
                 ID_EXE_PC                <= IF_ID_PC;
                 ID_EXE_RD_INDEX          <= rd_index;
                 ID_EXE_ALU_SIGNAL        <= alu_signal;
@@ -370,9 +394,31 @@ module CPU#(parameter LEN = 32,
                 ID_EXE_MEM_VIS_DATA_SIZE <= data_size;
                 ID_EXE_WB_SIGNAL         <= wb_signal;
                 ID_EXE_IMM               <= immediate;
-                ID_EXE_RS1               <= rs1_value; // 时间有误，存到了旧的数据
-                ID_EXE_RS2               <= rs2_value;
-                EXE_STATE_CTR            <= 1;
+                if (branch_signal == `NOT_BRANCH) begin
+                    CONTROL_STALL <= 0;
+                end
+                else begin
+                    CONTROL_STALL <= 1;
+                end
+                if (exe_valid&&exe_reg_index == rs1_index) begin
+                    ID_EXE_RS1 <= exe_forwarding_data;
+                end
+                else if (mem_valid&&mem_reg_index == rs1_index) begin
+                    ID_EXE_RS1 <= mem_forwarding_data;
+                end
+                else begin
+                    ID_EXE_RS1 <= rs1_value;
+                end
+                if (exe_valid&&exe_reg_index == rs2_index) begin
+                    ID_EXE_RS2 <= exe_forwarding_data;
+                end
+                else if (mem_valid&&mem_reg_index == rs2_index) begin
+                    ID_EXE_RS2 <= mem_forwarding_data;
+                end
+                else begin
+                    ID_EXE_RS2 <= rs2_value;
+                end
+                EXE_STATE_CTR <= 1;
             end
             else begin
                 EXE_STATE_CTR <= 0;
@@ -385,7 +431,7 @@ module CPU#(parameter LEN = 32,
     // ---------------------------------------------------------------------------------------------
     always @(posedge clk) begin
         if ((!rst)&&rdy_in&&start_cpu)begin
-            if (EXE_STATE_CTR) begin
+            if (OUTER_NOT_STALL) begin
                 EXE_MEM_PC                <= ID_EXE_PC;
                 EXE_MEM_RD_INDEX          <= ID_EXE_RD_INDEX;
                 EXE_MEM_FUNC_CODE         <= ID_EXE_FUNC_CODE;
@@ -397,7 +443,16 @@ module CPU#(parameter LEN = 32,
                 EXE_MEM_RS2               <= ID_EXE_RS2;
                 EXE_MEM_RESULT            <= alu_result;
                 EXE_MEM_ZERO_BITS         <= sign_bits;
-                MEM_STATE_CTR             <= 1;
+                // forwarding
+                if (ID_EXE_WB_SIGNAL == `ARITH) begin
+                    if (mem_reg_index == ID_EXE_RD_INDEX) begin
+                        mem_valid <= 0;
+                    end
+                    exe_valid           <= 1;
+                    exe_reg_index       <= ID_EXE_RD_INDEX;
+                    exe_forwarding_data <= alu_result;
+                end
+                MEM_STATE_CTR <= 1;
             end
             else begin
                 MEM_STATE_CTR <= 0;
@@ -461,11 +516,12 @@ module CPU#(parameter LEN = 32,
     // memory visit
     always @(posedge clk) begin
         if ((!rst)&&rdy_in&&start_cpu) begin
-            if (MEM_STATE_CTR) begin
-                if (mem_vis_status == `RESTING) begin
+            if (OUTER_NOT_STALL) begin
+                if (EXE_MEM_MEM_VIS_SIGNAL == `MEM_NOP) begin
                     // update pc
                     if (branch_flag) begin
-                        PC <= special_pc;
+                        PC            <= special_pc;
+                        CONTROL_STALL <= 0; // 正确PC已经计算出
                     end
                     else begin
                         PC <= increased_pc;
@@ -474,13 +530,43 @@ module CPU#(parameter LEN = 32,
                     MEM_WB_RD_INDEX  <= EXE_MEM_RD_INDEX;
                     MEM_WB_WB_SIGNAL <= EXE_MEM_WB_SIGNAL;
                     MEM_WB_RESULT    <= EXE_MEM_RESULT;
+                    
+                    DATA_STALL <= 0;
+                end
+                else if (mem_vis_status == `RESTING&&(EXE_MEM_MEM_VIS_SIGNAL == `WRITE||EXE_MEM_MEM_VIS_SIGNAL == `READ_DATA)) begin
+                    // update pc
+                    if (branch_flag) begin
+                        PC            <= special_pc;
+                        CONTROL_STALL <= 0; // 正确PC已经计算出
+                    end
+                    else begin
+                        PC <= increased_pc;
+                    end
+                    MEM_WB_PC        <= EXE_MEM_PC;
+                    MEM_WB_RD_INDEX  <= EXE_MEM_RD_INDEX;
+                    MEM_WB_WB_SIGNAL <= EXE_MEM_WB_SIGNAL;
+                    MEM_WB_RESULT    <= EXE_MEM_RESULT;
+                    
+                    DATA_STALL <= 1;
+                end
+                else begin
+                    
                 end
             end
             
             if (mem_vis_status == `R_W_FINISHED) begin
                 // data from memmory
                 MEM_WB_MEM_DATA <= mem_read_data;
-                WB_STATE_CTR    <= 1;
+                // forwarding
+                if (exe_reg_index == MEM_WB_RD_INDEX) begin
+                    exe_valid <= 0;
+                end
+                mem_valid           <= 1;
+                mem_reg_index       <= MEM_WB_RD_INDEX;
+                mem_forwarding_data <= alu_result;
+                
+                DATA_STALL   <= 0;
+                WB_STATE_CTR <= 1;
             end
             else begin
                 WB_STATE_CTR <= 0;
