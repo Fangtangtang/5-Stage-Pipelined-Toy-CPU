@@ -9,7 +9,7 @@
 // #############################################################################################################################
 `include "src/defines.v"
 
-module MAIN_MEMORY#(parameter ADDR_WIDTH = 17,
+module MAIN_MEMORY#(parameter ADDR_WIDTH = 20,
                     parameter LEN = 32,
                     parameter BYTE_SIZE = 8)
                    (input wire clk,
@@ -21,6 +21,15 @@ module MAIN_MEMORY#(parameter ADDR_WIDTH = 17,
     reg [BYTE_SIZE-1:0] storage [0:2**ADDR_WIDTH-1];
     reg [BYTE_SIZE-1:0] read_data;
     
+    wire [BYTE_SIZE-1:0] storage0Value = storage[131080];
+    wire [BYTE_SIZE-1:0] storage1Value = storage[131081];
+    wire [BYTE_SIZE-1:0] storage2Value = storage[131082];
+    wire [BYTE_SIZE-1:0] storage3Value = storage[131083];
+    wire [BYTE_SIZE-1:0] storage4Value = storage[131084];
+    wire [BYTE_SIZE-1:0] storage5Value = storage[131085];
+    wire [BYTE_SIZE-1:0] storage6Value = storage[131086];
+    wire [BYTE_SIZE-1:0] storage7Value = storage[131087];
+
     assign mem_data = read_data;
     // 编译为二进制的测试点命名为test.data
     initial begin

@@ -15,7 +15,7 @@ module top#(parameter SIM = 0,
     
     localparam SYS_CLK_FREQ = 100000000;		 // 系统时钟频率
     localparam UART_BAUD_RATE = 115200;			 // UART通信的波特率（数据在串行通信中传输的速率。它表示每秒传输的位数）
-    localparam ADDR_WIDTH = 17;
+    localparam ADDR_WIDTH = 20;
     localparam BYTE_SIZE  = 8;
     
     reg rst;

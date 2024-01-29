@@ -15,7 +15,7 @@
 // #############################################################################################################################
 `include "src/defines.v"
 
-module CACHE#(parameter ADDR_WIDTH = 17,
+module CACHE#(parameter ADDR_WIDTH = 20,
               parameter LEN = 32,
               parameter BYTE_SIZE = 8)
              (input wire clk,
@@ -59,7 +59,7 @@ module CACHE#(parameter ADDR_WIDTH = 17,
                 // write
                 if (mem_vis_type == `WRITE) begin
                     writen_data <= mem_write_data[15:8];
-                    addr <= addr + 1;
+                    addr        <= addr + 1;
                 end
                 // read
                 else begin
@@ -72,7 +72,7 @@ module CACHE#(parameter ADDR_WIDTH = 17,
                 // write
                 if (mem_vis_type == `WRITE) begin
                     writen_data <= mem_write_data[23:16];
-                    addr <= addr + 1;
+                    addr        <= addr + 1;
                 end
                 // read
                 else begin
@@ -86,7 +86,7 @@ module CACHE#(parameter ADDR_WIDTH = 17,
                 // write
                 if (mem_vis_type == `WRITE) begin
                     writen_data <= mem_write_data[31:24];
-                    addr <= addr+1;
+                    addr        <= addr+1;
                 end
                 // read
                 else begin
@@ -124,14 +124,6 @@ module CACHE#(parameter ADDR_WIDTH = 17,
             end
             0:begin
                 if (mem_vis_type == `MEM_NOP) begin
-                    if (inst_fetch_enabled) begin
-                        mem_vis_type <= `READ_INST;
-                        addr        = mem_inst_addr;
-                        MEM_VIS_CNT = 5;
-                        mem_vis_status <= `WORKING;
-                    end
-                    
-                    else
                     if (mem_vis_enabled) begin
                         data_size <= memory_vis_data_size;
                         case (memory_vis_signal)
@@ -175,7 +167,15 @@ module CACHE#(parameter ADDR_WIDTH = 17,
                             end
                         endcase
                     end
+                    else
+                    if (inst_fetch_enabled) begin
+                        mem_vis_type <= `READ_INST;
+                        addr        = mem_inst_addr;
+                        MEM_VIS_CNT = 5;
+                        mem_vis_status <= `WORKING;
+                    end
                 end
+                
                 else begin
                     mem_vis_type   <= `MEM_NOP;
                     mem_vis_status <= `RESTING;
