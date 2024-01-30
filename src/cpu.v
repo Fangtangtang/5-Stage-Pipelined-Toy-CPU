@@ -243,14 +243,13 @@ module CPU#(parameter LEN = 32,
     
     // MEM VISIT
     // ---------------------------------------------------------------------------------------------
-    // todo:当memory被占用时,如何stall
     
     assign mem_inst_addr      = PC[ADDR_WIDTH-1:0];
     assign inst_fetch_enabled = IF_START;
     assign mem_vis_enabled    = MEM_START;
     
     assign mem_data_addr        = EXE_MEM_RESULT[ADDR_WIDTH-1:0];
-    assign memory_vis_signal    = MEM_START ? EXE_MEM_MEM_VIS_SIGNAL:`MEM_NOP;
+    assign memory_vis_signal    = (MEM_START == 1) ? EXE_MEM_MEM_VIS_SIGNAL:`MEM_NOP;
     assign memory_vis_data_size = EXE_MEM_MEM_VIS_DATA_SIZE;
     assign mem_write_data       = EXE_MEM_RS2;
     
@@ -258,8 +257,6 @@ module CPU#(parameter LEN = 32,
     
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // PIPELINE
-    // 每一个stage,从上面的transfer register继承的值可靠
-    // 本阶段组合逻辑得到的结果不一定可靠,等待一个周期?
     
     // STATE CONTROLER
     // 
@@ -375,7 +372,6 @@ module CPU#(parameter LEN = 32,
             if (chip_enable&&start_cpu) begin
                 if (IF_START) begin
                     IF_ID_PC     <= PC;
-                    PC           <= PC+4;
                     ID_STATE_CTR <= 0;
                     if (PC_update_signal == `BRANCHED)begin
                         IF_ID_NEXT_IS_NOP <= 0;
@@ -384,6 +380,7 @@ module CPU#(parameter LEN = 32,
                 // IF没有结束，向下加stall
                 if (mem_vis_status == `IF_FINISHED) begin
                     ID_STATE_CTR <= 1;
+                    PC           <= PC+4;
                 end
             end
             else begin
@@ -411,7 +408,8 @@ module CPU#(parameter LEN = 32,
     always @(posedge clk) begin
         if ((!rst)&&rdy_in&&start_cpu) begin
             if (STAGE_CTR) begin
-                EXE_IS_STALL <= ID_IS_STALL;
+                EXE_IS_STALL  <= ID_IS_STALL;
+                EXE_STATE_CTR <= ID_STATE_CTR;
             end
             
             if (ID_START) begin
@@ -452,7 +450,7 @@ module CPU#(parameter LEN = 32,
                 else begin
                     ID_EXE_RS2 <= rs2_value;
                 end
-                EXE_STATE_CTR <= 1;
+                // EXE_STATE_CTR <= 1;
             end
             else begin
                 // EXE_STATE_CTR <= 0;
@@ -466,7 +464,8 @@ module CPU#(parameter LEN = 32,
     always @(posedge clk) begin
         if ((!rst)&&rdy_in&&start_cpu)begin
             if (STAGE_CTR) begin
-                MEM_IS_STALL <= EXE_IS_STALL;
+                MEM_IS_STALL  <= EXE_IS_STALL;
+                MEM_STATE_CTR <= EXE_STATE_CTR;
             end
             
             if (EXE_START) begin
@@ -489,7 +488,7 @@ module CPU#(parameter LEN = 32,
                     exe_reg_index       <= ID_EXE_RD_INDEX;
                     exe_forwarding_data <= alu_result;
                 end
-                MEM_STATE_CTR <= 1;
+                // MEM_STATE_CTR <= 1;
             end
             else begin
                 // MEM_STATE_CTR <= 0;
@@ -607,14 +606,4 @@ module CPU#(parameter LEN = 32,
         endcase
     end
     
-    always @(posedge clk) begin
-        if ((!rst)&&rdy_in&&start_cpu)begin
-            if (rf_status == `RF_FINISHED) begin
-                // IF_STATE_CTR <= 1;
-            end
-            else begin
-                // IF_STATE_CTR <= 0;
-            end
-        end
-    end
 endmodule
