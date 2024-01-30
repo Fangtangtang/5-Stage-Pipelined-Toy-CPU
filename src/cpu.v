@@ -45,6 +45,7 @@ module CPU#(parameter LEN = 32,
     // transfer register
     // if-id
     reg [LEN-1:0]   IF_ID_PC;
+    reg             IF_ID_NEXT_IS_NOP = 0;
     // id-exe
     reg [LEN-1:0]   ID_EXE_PC;
     reg [LEN-1:0]   ID_EXE_RS1;              // 从register file读取到的rs1数据
@@ -78,19 +79,22 @@ module CPU#(parameter LEN = 32,
     
     // DECODER
     // ---------------------------------------------------------------------------------------------
+    wire [LEN-1:0]  cpu_instruction = IF_ID_NEXT_IS_NOP?`NOP_INSTRUCTION:instruction;
+    
     wire [4:0]      rs1_index;
     wire [4:0]      rs2_index;
     wire [4:0]      rd_index;
-    assign rs1_index = instruction[19:15];
-    assign rs2_index = instruction[24:20];
-    assign rd_index  = instruction[11:7];
+    assign rs1_index = cpu_instruction[19:15];
+    assign rs2_index = cpu_instruction[24:20];
+    assign rd_index  = cpu_instruction[11:7];
     
     wire [6:0]      opcode;
-    assign opcode = instruction[6:0];
+    assign opcode = cpu_instruction[6:0];
     
     wire [3:0]      func_code;
-    assign func_code = {instruction[30],instruction[14:12]};
+    assign func_code = {cpu_instruction[30],cpu_instruction[14:12]};
     
+    wire            NOP_type;
     wire            R_type; // binary and part of imm binary
     wire            I_type; // jalr,load and part of imm binary
     wire            S_type; // store
@@ -99,12 +103,14 @@ module CPU#(parameter LEN = 32,
     wire            J_type; // jump
     
     wire special_func_code = func_code == 4'b0001||func_code == 4'b0101||func_code == 4'b1101;
-    assign R_type          = (opcode == 7'b0110011)||(opcode == 7'b0010011&&special_func_code);
-    assign I_type          = (opcode == 7'b0010011&&(!special_func_code))||(opcode == 7'b0000011)||(opcode == 7'b1100111&&func_code[2:0] == 3'b000);
-    assign S_type          = opcode == 7'b0100011;
-    assign B_type          = opcode == 7'b1100011;
-    assign U_type          = opcode == 7'b0110111||opcode == 7'b0010111;
-    assign J_type          = opcode == 7'b1101111;
+    
+    assign NOP_type = cpu_instruction == `NOP_INSTRUCTION;
+    assign R_type   = (opcode == 7'b0110011)||(opcode == 7'b0010011&&special_func_code);
+    assign I_type   = (opcode == 7'b0010011&&(!special_func_code))||(opcode == 7'b0000011)||(opcode == 7'b1100111&&func_code[2:0] == 3'b000);
+    assign S_type   = opcode == 7'b0100011;
+    assign B_type   = opcode == 7'b1100011;
+    assign U_type   = opcode == 7'b0110111||opcode == 7'b0010111;
+    assign J_type   = opcode == 7'b1101111;
     
     reg [2:0]       alu_signal;
     reg [1:0]       mem_vis_signal;
@@ -114,6 +120,15 @@ module CPU#(parameter LEN = 32,
     
     // 组合逻辑解码获取信号
     always @(*) begin
+        if (NOP_type) begin
+            alu_signal     = `ALU_NOP;
+            mem_vis_signal = `MEM_NOP;
+            data_size      = `NOT_ACCESS;
+            branch_signal  = `NOT_BRANCH;
+            wb_signal      = `WB_NOP;
+        end
+        else
+        
         if (R_type) begin
             case (opcode)
                 7'b0110011: begin
@@ -231,11 +246,11 @@ module CPU#(parameter LEN = 32,
     // todo:当memory被占用时,如何stall
     
     assign mem_inst_addr      = PC[ADDR_WIDTH-1:0];
-    assign inst_fetch_enabled = IF_STATE_CTR&&STAGE_CTR;
-    assign mem_vis_enabled    = MEM_STATE_CTR&&STAGE_CTR;
+    assign inst_fetch_enabled = IF_START;
+    assign mem_vis_enabled    = MEM_START;
     
     assign mem_data_addr        = EXE_MEM_RESULT[ADDR_WIDTH-1:0];
-    assign memory_vis_signal    = MEM_STATE_CTR&&STAGE_CTR ? EXE_MEM_MEM_VIS_SIGNAL:`MEM_NOP;
+    assign memory_vis_signal    = MEM_START ? EXE_MEM_MEM_VIS_SIGNAL:`MEM_NOP;
     assign memory_vis_data_size = EXE_MEM_MEM_VIS_DATA_SIZE;
     assign mem_write_data       = EXE_MEM_RS2;
     
@@ -250,29 +265,22 @@ module CPU#(parameter LEN = 32,
     // 
     // stall or not
     // 可能因为访存等原因stall
+    wire        ID_IS_STALL = IF_ID_NEXT_IS_NOP;
+    reg         EXE_IS_STALL;
+    reg         MEM_IS_STALL;
+    reg         WB_IS_STALL;
     
-    reg         MEM_STAGE_DATA_HAZARD = 0; // data hazard from mem visit
-    reg         IF_HAZARD             = 0;
-    wire        MEM_STALL             = MEM_STAGE_DATA_HAZARD||IF_HAZARD;
-    
-    
-    reg         IF_BRANCHED                = 0;
-    reg         ID_CONTROL_HAZARD          = 0;
-    reg         EXE_CONTROL_HAZARD         = 0;
-    reg         START_CONTROL_DETECTOR     = 0;
-    reg         IF_STAGE_CONTROL_DETECTOR  = 0;
-    reg         MEM_STAGE_CONTROL_DETECTOR = 0;
-    wire        IF_STATE_CTR               = (START_CONTROL_DETECTOR||IF_STAGE_CONTROL_DETECTOR||MEM_STAGE_CONTROL_DETECTOR)&&(!MEM_STAGE_DATA_HAZARD)&&!(PC == prev_pc);
-    
+    wire        IF_STATE_CTR  = (PC_update_signal == `INCREASE_PC)||(PC_update_signal == `BRANCHED);
     reg         ID_STATE_CTR  = 0;
     reg         EXE_STATE_CTR = 0;
     reg         MEM_STATE_CTR = 0;
     reg         WB_STATE_CTR  = 0;
-    wire        IF_START      = IF_STATE_CTR&&STAGE_CTR;
-    wire        ID_START      = ID_STATE_CTR&&STAGE_CTR;
-    wire        EXE_START     = EXE_STATE_CTR&&STAGE_CTR;
-    wire        MEM_START     = MEM_STATE_CTR&&STAGE_CTR;
-    wire        WB_START      = WB_STATE_CTR&&STAGE_CTR;
+    
+    wire        IF_START  = IF_STATE_CTR&&STAGE_CTR;
+    wire        ID_START  = ID_STATE_CTR&&STAGE_CTR&&(!ID_IS_STALL);
+    wire        EXE_START = EXE_STATE_CTR&&STAGE_CTR&&(!EXE_IS_STALL);
+    wire        MEM_START = MEM_STATE_CTR&&STAGE_CTR&&(!MEM_IS_STALL);
+    wire        WB_START  = WB_STATE_CTR&&STAGE_CTR&&(!WB_IS_STALL);
     
     // REGISTER FILE
     // ----------------------------------------------------------------------------
@@ -283,8 +291,8 @@ module CPU#(parameter LEN = 32,
     wire [LEN-1:0]          rs1_value;
     wire [LEN-1:0]          rs2_value;
     
-    assign  write_back_enabled = WB_STATE_CTR&&STAGE_CTR;
-    assign  rf_signal          = (WB_STATE_CTR&&rb_flag)? `RF_WRITE:`RF_NOP;
+    assign  write_back_enabled = WB_START;
+    assign  rf_signal          = (WB_START&&rb_flag)? `RF_WRITE:`RF_NOP;
     
     REG_FILE reg_file(
     .clk            (clk),
@@ -307,7 +315,7 @@ module CPU#(parameter LEN = 32,
     
     IMMEDIATE_GENETATOR immediate_generator(
     .chip_enable        (chip_enable),
-    .instruction        (instruction),
+    .instruction        (cpu_instruction),
     .inst_type          ({R_type,I_type,S_type,B_type,U_type,J_type}),
     .immediate          (immediate)
     );
@@ -337,9 +345,9 @@ module CPU#(parameter LEN = 32,
     always @ (posedge clk) begin
         if (rst == 0) begin
             if (!start_cpu) begin
-                START_CONTROL_DETECTOR <= 1;
-                start_cpu              <= 1;
-                STAGE_CLK              <= 0;
+                PC_update_signal <= `INCREASE_PC;
+                start_cpu        <= 1;
+                STAGE_CLK        <= 0;
             end
             chip_enable <= 1;
         end
@@ -360,44 +368,28 @@ module CPU#(parameter LEN = 32,
     // - memory visit取指令
     // - 更新transfer register的PC
     // ---------------------------------------------------------------------------------------------
-    reg [LEN-1:0] prev_pc = -1;
+    reg [1:0]   PC_update_signal;
     
     always @(posedge clk) begin
         if (rdy_in) begin
             if (chip_enable&&start_cpu) begin
-                if (STAGE_CTR) begin
-                    if (START_CONTROL_DETECTOR) begin
-                        START_CONTROL_DETECTOR <= 0;
-                    end
-                    
-                    if (IF_STATE_CTR&&!MEM_STALL) begin
-                        IF_HAZARD                 <= 1;
-                        IF_ID_PC                  <= PC;
-                        PC                        <= PC+4;
-                        IF_STAGE_CONTROL_DETECTOR <= 1;
-                        if (IF_BRANCHED) begin
-                            ID_CONTROL_HAZARD <= 0;
-                        end
+                if (IF_START) begin
+                    IF_ID_PC     <= PC;
+                    PC           <= PC+4;
+                    ID_STATE_CTR <= 0;
+                    if (PC_update_signal == `BRANCHED)begin
+                        IF_ID_NEXT_IS_NOP <= 0;
                     end
                 end
-                
                 // IF没有结束，向下加stall
                 if (mem_vis_status == `IF_FINISHED) begin
-                    prev_pc      <= IF_ID_PC;
                     ID_STATE_CTR <= 1;
-                    IF_HAZARD    <= 0;
-                end
-                else
-                
-                if (!MEM_STALL&&STAGE_CTR) begin
-                    ID_STATE_CTR <= 0;
                 end
             end
-            
             else begin
-            PC = 0;
+                PC = 0;
+            end
         end
-    end
     end
     
     // STAGE2 : INSTRUCTION DECODE
@@ -418,51 +410,52 @@ module CPU#(parameter LEN = 32,
     
     always @(posedge clk) begin
         if ((!rst)&&rdy_in&&start_cpu) begin
-            if (!MEM_STALL&&STAGE_CTR) begin
-                if (ID_STATE_CTR) begin
-                    if (!ID_CONTROL_HAZARD)begin
-                        ID_EXE_PC                <= IF_ID_PC;
-                        ID_EXE_RD_INDEX          <= rd_index;
-                        ID_EXE_ALU_SIGNAL        <= alu_signal;
-                        ID_EXE_FUNC_CODE         <= func_code;
-                        ID_EXE_BRANCH_SIGNAL     <= branch_signal;
-                        ID_EXE_MEM_VIS_SIGNAL    <= mem_vis_signal;
-                        ID_EXE_MEM_VIS_DATA_SIZE <= data_size;
-                        ID_EXE_WB_SIGNAL         <= wb_signal;
-                        ID_EXE_IMM               <= immediate;
-                        // control hazard?
-                        if (branch_signal == `NOT_BRANCH) begin
-                            ID_CONTROL_HAZARD <= 0;
-                        end
-                        else begin
-                            ID_CONTROL_HAZARD <= 1;
-                        end
-                        // forwarding
-                        if (exe_valid&&(exe_reg_index == rs1_index)) begin
-                            ID_EXE_RS1 <= exe_forwarding_data;
-                        end
-                        else if (mem_valid&&(mem_reg_index == rs1_index)) begin
-                            ID_EXE_RS1 <= mem_forwarding_data;
-                        end
-                        else begin
-                            ID_EXE_RS1 <= rs1_value;
-                        end
-                        if (exe_valid&&exe_reg_index == rs2_index) begin
-                            ID_EXE_RS2 <= exe_forwarding_data;
-                        end
-                        else if (mem_valid&&mem_reg_index == rs2_index) begin
-                            ID_EXE_RS2 <= mem_forwarding_data;
-                        end
-                        else begin
-                            ID_EXE_RS2 <= rs2_value;
-                        end
-                        
-                        EXE_STATE_CTR <= 1;
-                    end
+            if (STAGE_CTR) begin
+                EXE_IS_STALL <= ID_IS_STALL;
+            end
+            
+            if (ID_START) begin
+                // control hazard
+                if (branch_signal == `NOT_BRANCH) begin
+                    PC_update_signal  <= `INCREASE_PC;
+                    IF_ID_NEXT_IS_NOP <= 0;
                 end
                 else begin
-                    EXE_STATE_CTR <= 0;
+                    PC_update_signal  <= `WAITING_FOR_BRANCH;
+                    IF_ID_NEXT_IS_NOP <= 1;
                 end
+                ID_EXE_PC                <= IF_ID_PC;
+                ID_EXE_RD_INDEX          <= rd_index;
+                ID_EXE_ALU_SIGNAL        <= alu_signal;
+                ID_EXE_FUNC_CODE         <= func_code;
+                ID_EXE_BRANCH_SIGNAL     <= branch_signal;
+                ID_EXE_MEM_VIS_SIGNAL    <= mem_vis_signal;
+                ID_EXE_MEM_VIS_DATA_SIZE <= data_size;
+                ID_EXE_WB_SIGNAL         <= wb_signal;
+                ID_EXE_IMM               <= immediate;
+                // forwarding
+                if (exe_valid&&(exe_reg_index == rs1_index)) begin
+                    ID_EXE_RS1 <= exe_forwarding_data;
+                end
+                else if (mem_valid&&(mem_reg_index == rs1_index)) begin
+                    ID_EXE_RS1 <= mem_forwarding_data;
+                end
+                else begin
+                    ID_EXE_RS1 <= rs1_value;
+                end
+                if (exe_valid&&exe_reg_index == rs2_index) begin
+                    ID_EXE_RS2 <= exe_forwarding_data;
+                end
+                else if (mem_valid&&mem_reg_index == rs2_index) begin
+                    ID_EXE_RS2 <= mem_forwarding_data;
+                end
+                else begin
+                    ID_EXE_RS2 <= rs2_value;
+                end
+                EXE_STATE_CTR <= 1;
+            end
+            else begin
+                // EXE_STATE_CTR <= 0;
             end
         end
     end
@@ -472,35 +465,34 @@ module CPU#(parameter LEN = 32,
     // ---------------------------------------------------------------------------------------------
     always @(posedge clk) begin
         if ((!rst)&&rdy_in&&start_cpu)begin
-            if (!MEM_STALL&&STAGE_CTR) begin
-                if (EXE_STATE_CTR) begin
-                    if (!EXE_CONTROL_HAZARD) begin
-                        EXE_MEM_PC                <= ID_EXE_PC;
-                        EXE_MEM_RD_INDEX          <= ID_EXE_RD_INDEX;
-                        EXE_MEM_FUNC_CODE         <= ID_EXE_FUNC_CODE;
-                        EXE_MEM_BRANCH_SIGNAL     <= ID_EXE_BRANCH_SIGNAL;
-                        EXE_MEM_MEM_VIS_SIGNAL    <= ID_EXE_MEM_VIS_SIGNAL;
-                        EXE_MEM_MEM_VIS_DATA_SIZE <= ID_EXE_MEM_VIS_DATA_SIZE;
-                        EXE_MEM_WB_SIGNAL         <= ID_EXE_WB_SIGNAL;
-                        EXE_MEM_IMM               <= ID_EXE_IMM;
-                        EXE_MEM_RS2               <= ID_EXE_RS2;
-                        EXE_MEM_RESULT            <= alu_result;
-                        EXE_MEM_ZERO_BITS         <= sign_bits;
-                        if (ID_EXE_WB_SIGNAL == `ARITH) begin
-                            if (mem_reg_index == ID_EXE_RD_INDEX) begin
-                                mem_valid <= 0;
-                            end
-                            exe_valid           <= 1;
-                            exe_reg_index       <= ID_EXE_RD_INDEX;
-                            exe_forwarding_data <= alu_result;
-                        end
+            if (STAGE_CTR) begin
+                MEM_IS_STALL <= EXE_IS_STALL;
+            end
+            
+            if (EXE_START) begin
+                EXE_MEM_PC                <= ID_EXE_PC;
+                EXE_MEM_RD_INDEX          <= ID_EXE_RD_INDEX;
+                EXE_MEM_FUNC_CODE         <= ID_EXE_FUNC_CODE;
+                EXE_MEM_BRANCH_SIGNAL     <= ID_EXE_BRANCH_SIGNAL;
+                EXE_MEM_MEM_VIS_SIGNAL    <= ID_EXE_MEM_VIS_SIGNAL;
+                EXE_MEM_MEM_VIS_DATA_SIZE <= ID_EXE_MEM_VIS_DATA_SIZE;
+                EXE_MEM_WB_SIGNAL         <= ID_EXE_WB_SIGNAL;
+                EXE_MEM_IMM               <= ID_EXE_IMM;
+                EXE_MEM_RS2               <= ID_EXE_RS2;
+                EXE_MEM_RESULT            <= alu_result;
+                EXE_MEM_ZERO_BITS         <= sign_bits;
+                if (ID_EXE_WB_SIGNAL == `ARITH) begin
+                    if (mem_reg_index == ID_EXE_RD_INDEX) begin
+                        mem_valid <= 0;
                     end
-                    EXE_CONTROL_HAZARD <= ID_CONTROL_HAZARD;
-                    MEM_STATE_CTR      <= 1;
+                    exe_valid           <= 1;
+                    exe_reg_index       <= ID_EXE_RD_INDEX;
+                    exe_forwarding_data <= alu_result;
                 end
-                else begin
-                    MEM_STATE_CTR <= 0;
-                end
+                MEM_STATE_CTR <= 1;
+            end
+            else begin
+                // MEM_STATE_CTR <= 0;
             end
         end
     end
@@ -561,44 +553,30 @@ module CPU#(parameter LEN = 32,
     // memory visit
     always @(posedge clk) begin
         if ((!rst)&&rdy_in&&start_cpu) begin
-            if (MEM_STATE_CTR&&!MEM_STALL&&STAGE_CTR) begin
-                MEM_STAGE_DATA_HAZARD <= 1; // todo: MEM_NOP?
+            if (STAGE_CTR) begin
+                WB_IS_STALL <= MEM_IS_STALL;
+            end
+            
+            if (MEM_START) begin
+                WB_STATE_CTR <= 0;
                 if (mem_vis_status == `RESTING) begin
                     // update pc
                     if (branch_flag) begin
-                        PC                         <= special_pc;
-                        MEM_STAGE_CONTROL_DETECTOR <= 1;
-                        IF_BRANCHED                <= 1;
-                    end
-                    else begin
-                        // PC                      <= increased_pc;
-                        MEM_STAGE_CONTROL_DETECTOR <= 0;
-                        IF_BRANCHED                <= 0;
+                        PC                <= special_pc;
+                        PC_update_signal  <= `BRANCHED;
+                        IF_ID_NEXT_IS_NOP <= 1;
                     end
                     MEM_WB_PC        <= EXE_MEM_PC;
                     MEM_WB_RD_INDEX  <= EXE_MEM_RD_INDEX;
                     MEM_WB_WB_SIGNAL <= EXE_MEM_WB_SIGNAL;
                     MEM_WB_RESULT    <= EXE_MEM_RESULT;
-                    if (exe_reg_index == EXE_MEM_RD_INDEX) begin
-                        exe_valid <= 0;
-                    end
-                    mem_reg_index <= EXE_MEM_RD_INDEX;
-                    mem_valid     <= 0;
                 end
             end
             
             if (mem_vis_status == `R_W_FINISHED) begin
-                MEM_STAGE_DATA_HAZARD <= 0;
                 // data from memmory
-                MEM_WB_MEM_DATA     <= mem_read_data;
-                mem_valid           <= 1;
-                mem_forwarding_data <= alu_result;
-                WB_STATE_CTR        <= 1;
-            end
-            else
-            
-            if (!MEM_STALL&&STAGE_CTR)begin
-                WB_STATE_CTR <= 0;
+                MEM_WB_MEM_DATA <= mem_read_data;
+                WB_STATE_CTR    <= 1;
             end
         end
     end

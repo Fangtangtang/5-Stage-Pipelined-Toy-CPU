@@ -68,3 +68,11 @@
 `define     RF_NOP                  2'b00
 `define     RF_WRITE                2'b01
 `define     RF_FINISHED             2'b10
+
+// instruction NOP
+`define     NOP_INSTRUCTION         32'b00000000000000000000000000000000
+
+// PC update
+`define     INCREASE_PC             2'b00
+`define     WAITING_FOR_BRANCH      2'b01
+`define     BRANCHED                2'b10
